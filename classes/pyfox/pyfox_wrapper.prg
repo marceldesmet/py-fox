@@ -1,0 +1,410 @@
+*========================================================================
+* Class: PythonTuple of pyfox_wrapper.prg
+* Purpose: Bridge utilities to convert Python objects (via CPython pointer wrappers)
+* to VFP-friendly structures and provide helpers for error handling and tuple
+* conversions. This file contains a collection-style wrapper `PythonTuple` which
+* can be used to represent a Python tuple as a VFP Collection, or create a
+* collection from multiple arguments (e.g. exc_info type/value/traceback).
+*
+* NOTE: This wrapper maps raw CPython pointer values to VFP-friendly
+* representations. Use `getval()` or helper functions to convert wrappers back
+* to VFP native values (.NULL., strings, numbers, etc.).
+*========================================================================
+DEFINE CLASS PythonTuple AS PythonObjectImpl
+   FUNCTION INIT(arg1,arg2,arg3,arg4,arg5, arg6,arg7,arg8,arg9)
+      IF VARTYPE(arg1) == 'O' AND PARAMETERS() == 1 .AND. PEMSTATUS(arg1,"count",5)
+         * Initialize from a VFP Collection
+         LOCAL loColl, lnI, loElem
+         loColl = arg1
+         this.pyobject = PyTuple_New(loColl.Count)
+         FOR lnI = 1 TO loColl.Count
+            loElem = CREATEOBJECT('PythonObject', loColl.Item(lnI))
+            Py_IncRef(loElem.obj())
+            IF PyTuple_SetItem(this.pyobject, lnI-1, loElem.obj()) != 0
+               RETURN .F.
+            ENDIF
+            RELEASE loElem
+         ENDFOR
+      ELSE
+         * Initialize from individual arguments
+         LOCAL numparams, argnum
+         numparams = MIN(PARAMETERS(), 9)
+         this.pyobject = PyTuple_New(numparams)
+         FOR argnum = 1 to numparams
+            LOCAL pyval
+            pyval = CREATEOBJECT('PythonObject', EVALUATE('arg' + STR(argnum,1)))
+            Py_IncRef(pyval.obj())
+            IF PyTuple_SetItem(this.pyobject, argnum-1, pyval.obj()) != 0
+               RETURN .F.
+            ENDIF
+            RELEASE pyval
+         ENDFOR
+      ENDIF
+   ENDFUNC
+ENDDEFINE
+
+*-------------------------------------------------------------------------
+* Class: PythonDictionary
+* Purpose: Wrapper class that represents a Python `dict` (PyDict) in VFP.
+*
+* Notes:
+* - This wrapper inherits from PythonObjectImpl so it provides standard Python
+*   object operations (getitem, setitem, delitem, repr, etc.) by forwarding
+*   to CPython C-API calls.
+*
+* Important:
+* - Keys and values are converted to Python objects by `PythonObject` wrapper.
+ * - If you need a purely VFP collection of pairs for iteration (native VFP use),
+ *   use `PyToNativeVfp()` to convert the dict into a VFP collection of 2-element arrays.
+*-------------------------------------------------------------------------
+DEFINE CLASS PythonDictionary AS PythonObjectImpl
+   FUNCTION INIT(tuple_of_2_ples)
+      this.pyobject = PyDict_New()
+      IF VARTYPE(tuple_of_2_ples) == 'O'
+         * This is not a vfp collections so a `.iter` property is used to iterate
+         FOR EACH tuple IN tuple_of_2_ples.iter
+            * Calling `this.setitem()` is the same as PyObject_SetItem(this.pyobject, key, value)
+            this.setitem(tuple.getitem(0), tuple.getitem(1))
+         ENDFOR
+      ENDIF
+   ENDFUNC
+ENDDEFINE
+
+DEFINE CLASS PythonBuiltin AS PythonObjectImpl
+   FUNCTION INIT(varname)
+      LOCAL pyval
+      pyval = _PyBuiltins.GetAttrRetObj(varname)
+      this.pyobject = pyval.obj()
+   ENDFUNC
+ENDDEFINE 
+
+DEFINE CLASS PythonModule AS PythonObjectImpl
+   FUNCTION INIT(modulename)
+      this.pyobject = PyImport_ImportModule(modulename)
+      IF this.pyobject == 0
+         ERROR _PyFoxError()
+         RETURN .F.
+      ENDIF
+   ENDFUNC
+ENDDEFINE
+
+DEFINE CLASS PythonList AS PythonObjectImpl
+   FUNCTION INIT(foxarray)
+      this.pyobject = PyList_New(0)
+      IF PARAMETERS() > 0
+         IF TYPE('foxarray', 1) == 'A'
+            LOCAL element, elemTuple
+            FOR EACH element IN foxarray
+               elemTuple = CREATEOBJECT('PythonTuple', element)
+               this.CallMethod('append', elemTuple, .NULL.)
+            ENDFOR
+         ELSE
+            ERROR 'input must be an array'
+            RETURN .F.
+         ENDIF
+      ENDIF
+   ENDFUNC
+ENDDEFINE
+
+DEFINE CLASS PyStdoutRedirect AS CUSTOM
+   io = .NULL.
+
+   FUNCTION INIT(output_type)
+      LOCAL stringiomodule
+      IF _PyMajorVersion == 2
+         stringiomodule = 'StringIO'
+      ELSE
+         stringiomodule = 'io'
+      ENDIF
+      this.io = _PyVfpHost.PythonFunctionCall(stringiomodule, 'StringIO', _PyEmptyTuple)
+      _PySys.setAttr(output_type, this.io)
+   ENDFUNC
+
+   FUNCTION read
+      retval = this.io.callmethod('getvalue', _PyEmptyTuple)
+      this.io.callmethod('seek', CreateObject('PythonTuple', 0))
+      this.io.callmethod('truncate', _PyEmptyTuple)
+      RETURN retval
+   ENDFUNC
+ENDDEFINE
+
+DEFINE CLASS PythonObject AS PythonObjectImpl
+   FUNCTION INIT(foxval)
+      LOCAL valtype, pyobject, oerr
+      valtype = VARTYPE(foxval)
+      DO CASE
+         CASE valtype == 'N'
+            IF ROUND(foxval, 0) == foxval
+               pyobject = PyLong_FromLong(foxval)
+            ELSE
+               pyobject = PyFloat_FromDouble(foxval)
+            ENDIF
+         CASE valtype == 'C'
+            pyobject = PyUnicode_FromStringAndSize(foxval, len(foxval))
+         CASE valtype == 'L'
+            pyobject = PyBool_FromLong(foxval)
+         CASE valtype == 'O'
+            TRY
+               pyobject = foxval.obj()
+            CATCH TO OERR
+
+            ENDTRY
+
+            IF VARTYPE(OERR) == 'O'
+               ERROR 'Cannot create PythonObject from foxpro classes'
+               RETURN
+            ENDIF
+
+            Py_IncRef(pyobject)
+         CASE valtype == 'T' OR valtype == 'D'
+            LOCAL DateTuple, DateMethod
+            IF valtype == 'T'
+               DateTuple = CREATEOBJECT('PythonTuple', YEAR(foxval), MONTH(foxval), DAY(foxval), HOUR(foxval), MINUTE(foxval), SEC(foxval))
+               DateMethod = 'datetime'
+            ELSE
+               DateTuple = CREATEOBJECT('PythonTuple', YEAR(foxval), MONTH(foxval), DAY(foxval))
+               DateMethod = 'date'
+            ENDIF
+            TRY
+               pyobject = _PyDatetime.CallMethodRetObj(DateMethod, DateTuple, .NULL.)
+            CATCH TO OERR
+               pyobject = _PyNone
+            ENDTRY
+            Py_IncRef(pyobject.obj())
+            pyobject = pyobject.obj()
+         CASE valtype == 'X'
+            pyobject = _PyNone.obj()
+            Py_IncRef(pyobject)
+         OTHERWISE
+            ERROR 'Unknown Variable Type/Cannot create pythonObject'
+            RETURN
+      ENDCASE
+      this.pyobject = pyobject
+   ENDFUNC
+ENDDEFINE
+
+DEFINE CLASS PythonObjectImpl AS Custom
+   PROTECTED pyobject
+   iter = .NULL.
+
+   PROCEDURE INIT(pyobj)
+      IF pyobj == 0
+         ERROR 'invalid input value'
+         RETURN .NULL.
+      ENDIF
+      this.pyobject = pyobj
+   ENDPROC
+
+   PROCEDURE obj()
+      RETURN this.pyobject
+   ENDPROC
+
+   PROCEDURE GETVAL()
+      LOCAL retval, typeobj
+      IF this.pyobject > 0
+         typeobj = this.type()
+         typeobj = typeobj.obj()
+         DO CASE
+            CASE this.pyobject == _PyNone.obj()
+               retval = .NULL.
+            CASE typeobj == _PyBoolType.obj()
+               retval = PyLong_AsLong(this.pyobject) > 0
+            CASE typeobj == _PyIntType.obj() OR typeobj == _PyNotLongType.obj()
+               retval = PyLong_AsLong(this.pyobject)
+            CASE typeobj == _PyFloatType.obj()
+               retval = PyFloat_AsDouble(this.pyobject)
+            CASE typeobj == _PyBytesType.obj()
+               LOCAL string_pointer, string_length
+               string_length = PyBytes_Size(this.pyobject)
+               string_pointer = PyBytes_AsString(this.pyobject)
+               retval = SYS(2600, string_pointer, string_length)
+            CASE typeobj == _PyStrType.obj()
+               * For str types, call 'encode' to get bytes and then unwrap the bytes to a VFP string
+               LOCAL tmp
+               tmp = this.callmethod('encode', CREATEOBJECT('PythonTuple', 'utf-8'))
+               IF VARTYPE(tmp) == 'O'
+                  retval = tmp.getval()
+               ELSE
+                  retval = tmp
+               ENDIF
+            CASE typeobj == _PyDateType.obj()
+               retval = DATE(this.getattr('year'), this.getattr('month'), this.getattr('day'))
+            CASE typeobj == _PyDatetimeType.obj()
+               retval = DATETIME(this.getattr('year'), this.getattr('month'), this.getattr('day'),;
+                                 this.getattr('hour'), this.getattr('minute'), this.getattr('second'))
+            CASE typeobj == _PyDecimalType.obj()
+               retval = VAL(_PyStrType.Call(CREATEOBJECT('pythontuple', this)))
+            OTHERWISE
+               retval = this
+         ENDCASE
+      ENDIF
+      RETURN retval
+   ENDPROC
+
+   PROCEDURE GetItemRetObj(ind)
+      LOCAL pyind, retval
+      pyind = CREATEOBJECT('PythonObject', ind)
+      retval = PyObject_GetItem(this.pyobject, pyind.obj())
+      IF retval == 0
+         ERROR _PyFoxError()
+         RETURN .NULL.
+      ENDIF
+      retval = CREATEOBJECT('PythonObjectImpl', retval)
+      RETURN retval
+   ENDPROC
+
+   PROCEDURE GetItem(ind)
+      LOCAL retval
+      retval = this.GetItemRetObj(ind)
+      IF ISNULL(retval)
+         RETURN retval
+      ENDIF
+      RETURN retval.getval()
+   ENDPROC
+
+   PROCEDURE SetItem(ind, foxval)
+      LOCAL oerr, pyind, pyval
+      TRY
+         pyind = CREATEOBJECT('PythonObject', ind)
+         pyval = CREATEOBJECT('PythonObject', foxval)
+         IF PyObject_SetItem(this.pyobject, pyind.obj(), pyval.obj()) == -1
+            ERROR _PyFoxError()
+         ENDIF
+      CATCH TO OERR
+
+      ENDTRY
+
+      IF VARTYPE(OERR) == 'O'
+         ERROR OERR.MESSAGE
+         RETURN .F.
+      ENDIF
+
+      RETURN .T.
+   ENDPROC
+
+   PROCEDURE DelItem(ind)
+      LOCAL pyind
+      pyind = CREATEOBJECT('PythonObject', ind)
+      IF PyObject_DelItem(this.pyobject, pyind.obj()) == -1
+         ERROR _PyFoxError()
+         RETURN .F.
+      ENDIF
+      RETURN .T.
+   ENDPROC
+
+   FUNCTION GetAttrRetObj(attrname)
+      LOCAL attrobj, retval
+      attrobj = PyObject_GetAttrString(this.pyobject, attrname)
+      IF attrobj == 0
+          ERROR _PyFoxError()
+          RETURN .NULL.
+      ENDIF
+      RETURN CREATEOBJECT('PythonObjectImpl', attrobj)
+   ENDFUNC
+
+   PROCEDURE GetAttr(attrname)
+      LOCAL retval
+      retval = this.GetAttrRetObj(attrname)
+      IF TYPE('retval') != 'O'
+          RETURN .NULL.
+      ENDIF
+      retval = retval.getval()
+      RETURN retval
+   ENDPROC
+
+   PROCEDURE SetAttr(attrname, foxval)
+      LOCAL retval
+      pyval = CREATEOBJECT('PythonObject', foxval)
+      IF PyObject_SetAttrString(this.pyobject, attrname, pyval.obj()) == -1
+         ERROR _PyFoxError()
+         RETURN .F.
+      ENDIF
+      RETURN .T.
+   ENDPROC
+
+   FUNCTION Iter_Access()
+      LOCAL retval, pyiter, nextitem
+      retval = CREATEOBJECT("collection")
+      pyiter = PyObject_GetIter(this.pyobject)
+      IF pyiter == 0
+         ERROR _PyFoxError()
+         RETURN retval
+      ENDIF
+      nextitem = PyIter_Next(pyiter)
+      DO WHILE nextitem != 0
+         pyitem = CREATEOBJECT('PythonObjectImpl', nextitem)
+         retval.add(pyitem.getval())
+         nextitem = PyIter_Next(pyiter)
+      ENDDO
+      Py_DecRef(pyiter)
+      RETURN retval
+   ENDPROC
+
+   PROCEDURE Repr()
+      LOCAL pyobject
+      pyobject = CREATEOBJECT('PythonObjectImpl', PyObject_Repr(this.pyobject))
+      RETURN pyobject.getval()
+   ENDPROC
+
+   FUNCTION Type()
+      return CREATEOBJECT('PythonObjectImpl', PyObject_Type(this.pyobject))
+   ENDFUNC
+
+   PROCEDURE CallRetObj(argtuple, kwarg_dict)
+      LOCAL pyobj, pyval
+      DO CASE
+      CASE VARTYPE(argtuple) != 'O'
+         pyobj = PyObject_Call(this.pyobject, _PyEmptyTuple.obj(), 0)
+      CASE VARTYPE(kwarg_dict) != 'O'
+         pyobj = PyObject_Call(this.pyobject, argtuple.obj(), 0)
+      OTHERWISE
+         pyobj = PyObject_Call(this.pyobject, argtuple.obj(), kwarg_dict.obj())
+      ENDCASE
+
+      IF pyobj == 0
+         ERROR _PyFoxError()
+         RETURN .F.
+      ENDIF
+
+      RETURN CREATEOBJECT('PythonObjectImpl', pyobj)
+   ENDPROC
+
+   PROCEDURE Call(argtuple, kwarg_dict)
+      LOCAL pyval
+      pyval = this.CallRetObj(argtuple, kwarg_dict)
+      IF VARTYPE(pyval) == 'O'
+         RETURN pyval.getval()
+      ELSE
+         RETURN .NULL.
+      ENDIF
+   ENDPROC
+
+   PROCEDURE CallMethodRetObj(obj_method, argtuple, kwarg_dict)
+      LOCAL funcobj
+      funcobj = this.GetAttrRetObj(obj_method)
+      IF VARTYPE(funcobj) != 'O'
+          RETURN .F.
+      ENDIF
+      RETURN funcobj.CallRetObj(argtuple, kwarg_dict)
+   ENDPROC
+
+   PROCEDURE CallMethod(obj_method, argtuple, kwarg_dict)
+      LOCAL funcobj
+      funcobj = this.GetAttrRetObj(obj_method)
+      IF VARTYPE(funcobj) != 'O'
+          RETURN .F.
+      ENDIF
+      RETURN funcobj.call(argtuple, kwarg_dict)
+   ENDPROC
+
+*!*	   PROCEDURE DESTROY
+*!*	      IF this.pyobject != 0 AND Py_IsInitialized() != 0
+*!*	         Py_DecRef(this.pyobject)
+*!*	      ENDIF
+*!*	   ENDPROC
+
+ENDDEFINE
+
+
+
+

@@ -1,0 +1,107 @@
+DEFINE CLASS PythonHost AS Custom
+
+    cPythonDLLPath = "C:\Webconnectionprojects\WebMove\python\python312-32\python312.dll"
+    lnHandle = 0
+    lInitialized = .F.
+
+    FUNCTION LoadPythonDLL(tcDllPath)
+        LOCAL lcPath
+        lcPath = IIF(EMPTY(tcDllPath), THIS.cPythonDLLPath, tcDllPath)
+
+        IF FILE(lcPath)
+            DECLARE INTEGER LoadLibrary IN kernel32 STRING lpLibFileName
+            THIS.lnHandle = LoadLibrary(lcPath)
+
+            IF THIS.lnHandle != 0
+                * Declare Python API functions once
+                DECLARE INTEGER Py_Initialize IN (lcPath)						&& Foxpro don't support VOID  
+                DECLARE INTEGER Py_Finalize IN (lcPath)							&& Foxpro don't support VOID 
+                DECLARE INTEGER PyRun_SimpleString IN (lcPath) STRING code
+                
+                DECLARE INTEGER PyImport_ImportModule IN (lcPath) STRING name
+                DECLARE INTEGER PyObject_GetAttrString IN (lcPath) INTEGER pObj, STRING attr
+                DECLARE INTEGER PyCallable_Check IN (lcPath) INTEGER pObj
+                DECLARE INTEGER PyObject_CallObject IN (lcPath) INTEGER callable, INTEGER args
+                
+                * Procedures for tuple handling 
+                * A tuple in Python is an immutable sequence type, like a fixed list.
+                * We need these functions to check and extract items from tuples returned by Python functions.
+                * These declarations allow us to interact with Python tuples from VFP.
+                * They are hold in the Python C API and hold value in a VFP collection
+                DECLARE INTEGER PyTuple_Check IN (lcPath) INTEGER pObj
+                DECLARE INTEGER PyTuple_Size IN (lcPath) INTEGER pObj
+                DECLARE INTEGER PyTuple_GetItem IN (lcPath) INTEGER pObj, INTEGER pos
+                DECLARE STRING PyUnicode_AsUTF8 IN (lcPath) INTEGER pObj
+
+                * Error handling functions
+                DECLARE INTEGER PyErr_Occurred IN (lcPath)
+                DECLARE INTEGER PyErr_Print IN (lcPath)
+                DECLARE PyErr_Fetch IN (PythonDll) integer @, integer @, integer @
+                DECLARE PyErr_NormalizeException IN (PythonDll) integer @, integer @, integer @
+
+                * Initialize Python once
+                Py_Initialize()
+                THIS.lInitialized = .T.
+                ? "Python DLL loaded and initialized."
+            ELSE
+                ? "Failed to load Python DLL."
+            ENDIF
+        ELSE
+            ? "DLL not found: " + lcPath
+        ENDIF
+    ENDPROC
+
+    FUNCTION RunPythonCode(tcCode)
+        IF THIS.lInitialized
+            RETURN PyRun_SimpleString(tcCode)
+        ENDIF
+        RETURN -1
+    ENDPROC
+
+    FUNCTION PythonFunctionCall(tcModule, tcFunction, toReturnObj)
+        LOCAL loModule, loFunc, loResult, lnSize, i, loItem, lcVal
+
+        IF NOT THIS.lInitialized
+            RETURN .NULL.
+        ENDIF
+
+        loModule = PyImport_ImportModule(tcModule)
+        IF loModule = 0
+            RETURN .NULL.
+        ENDIF
+
+        loFunc = PyObject_GetAttrString(loModule, tcFunction)
+        IF loFunc = 0 OR PyCallable_Check(loFunc) = 0
+            RETURN .NULL.
+        ENDIF
+
+        loResult = PyObject_CallObject(loFunc, 0)
+
+        IF PyTuple_Check(loResult) != 0
+            lnSize = PyTuple_Size(loResult)
+            FOR i = 0 TO lnSize-1
+                loItem = PyTuple_GetItem(loResult, i)
+                lcVal = PyUnicode_AsUTF8(loItem)
+                toReturnObj.AddItem(lcVal)
+            ENDFOR
+            RETURN toReturnObj
+        ELSE
+            RETURN PyUnicode_AsUTF8(loResult)
+        ENDIF
+    ENDPROC
+
+    FUNCTION UnloadPythonDLL()
+        IF THIS.lInitialized
+            Py_Finalize()
+            THIS.lInitialized = .F.
+        ENDIF
+
+        IF THIS.lnHandle != 0
+            DECLARE INTEGER FreeLibrary IN kernel32 INTEGER hLibModule
+            FreeLibrary(THIS.lnHandle)
+            THIS.lnHandle = 0
+            ? "Python DLL unloaded."
+        ENDIF
+    ENDPROC
+
+ENDDEFINE

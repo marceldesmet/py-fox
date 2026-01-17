@@ -1,0 +1,338 @@
+DEFINE CLASS PythonHost AS CUSTOM
+
+	cPythonDLLPath = "C:\Webconnectionprojects\WebMove\deploy\addons\py-fox\python312-32\python312.dll"
+	cPythonExe = "C:\Webconnectionprojects\WebMove\deploy\addons\py-fox\python312-32\python.exe"
+	lnHandle = 0
+	lInitialized = .F.
+	lVerbose = .F.
+
+	FUNCTION LoadPythonDLL(tcDllPath)
+		LOCAL lcPath
+		lcPath = IIF(EMPTY(tcDllPath), THIS.cPythonDLLPath, tcDllPath)
+
+		IF FILE(lcPath)
+			DECLARE INTEGER LoadLibrary IN kernel32 STRING lpLibFileName
+			THIS.lnHandle = LoadLibrary(lcPath)
+
+			PUBLIC _PyMajorVersion
+			_PyMajorVersion = THIS.GetMajorVersion(THIS.cPythonDLLPath)
+
+			IF THIS.lnHandle != 0
+				* Declare Python API functions once
+				DECLARE Py_Initialize IN (lcPath)						&& Foxpro don't support VOID
+				DECLARE Py_Finalize IN (lcPath)							&& Foxpro don't support VOID
+				DECLARE INTEGER PyRun_SimpleString IN (lcPath) STRING CODE
+
+				DECLARE INTEGER PyImport_ImportModule IN (lcPath) STRING NAME
+				DECLARE INTEGER PyObject_GetAttrString IN (lcPath) INTEGER pObj, STRING ATTR
+				DECLARE INTEGER PyCallable_Check IN (lcPath) INTEGER pObj
+				DECLARE INTEGER PyObject_CallObject IN (lcPath) INTEGER callable, INTEGER args
+
+				IF _PyMajorVersion == 2
+					DECLARE INTEGER PyUnicodeUCS2_FromStringAndSize IN (lcPath) AS PyUnicode_FromStringAndSize STRING, INTEGER
+					DECLARE INTEGER PyString_AsString IN (lcPath) AS PyBytes_AsString INTEGER
+					DECLARE INTEGER PyString_Size IN (lcPath) AS PyBytes_Size INTEGER
+					DECLARE INTEGER PyString_FromStringAndSize IN (lcPath) AS PyBytes_FromStringAndSize STRING, INTEGER
+				ELSE
+					DECLARE INTEGER PyUnicode_FromStringAndSize IN (lcPath) STRING, INTEGER
+					DECLARE INTEGER PyBytes_AsString IN (lcPath) INTEGER
+					DECLARE INTEGER PyBytes_Size IN (lcPath) INTEGER
+					DECLARE INTEGER PyBytes_FromStringAndSize IN (lcPath) STRING, INTEGER
+				ENDIF
+
+				* Procedures for tuple handling
+				DECLARE INTEGER PyTuple_Size IN (lcPath) INTEGER pObj
+				DECLARE INTEGER PyTuple_GetItem IN (lcPath) INTEGER pObj, INTEGER pos
+
+				* --- String handling ---
+				DECLARE STRING  PyUnicode_AsUTF8 IN (lcPath) INTEGER pObj
+
+				* --- Float handling ---
+				DECLARE DOUBLE  PyFloat_AsDouble IN (lcPath) INTEGER pObj
+
+				* --- Integers / bools ---
+				DECLARE LONG PyLong_AsLong IN  (lcPath) INTEGER pObj
+				DECLARE INTEGER PyLong_FromLong IN (lcPath) LONG
+
+				* --- Booleans ---
+				DECLARE INTEGER PyBool_FromLong IN (lcPath) LONG
+
+				* --- Floats ---
+				DECLARE DOUBLE  PyFloat_AsDouble IN (lcPath) INTEGER pObj
+				DECLARE INTEGER PyFloat_FromDouble IN (lcPath) DOUBLE
+
+				* --- Bytes ---
+				DECLARE INTEGER PyBytes_Size IN (lcPath) INTEGER pObj
+				DECLARE INTEGER PyBytes_AsString IN (lcPath) INTEGER pObj
+
+				* Error handling functions
+				* --- Error handling ---
+				DECLARE INTEGER PyErr_Occurred IN (lcPath)
+				DECLARE PyErr_Fetch IN (lcPath) INTEGER @pType, INTEGER @pValue, INTEGER @pTraceback
+				DECLARE PyErr_NormalizeException IN (lcPath) INTEGER @pType, INTEGER @pValue, INTEGER @pTraceback
+
+				* Get attribute by name
+				DECLARE INTEGER PyObject_GetAttrString IN (lcPath) INTEGER pObj, STRING NAME
+
+				* Call a method on an object
+				DECLARE INTEGER PyObject_CallMethod IN (lcPath) INTEGER pObj, STRING NAME, INTEGER args
+
+				* Call a callable object with arguments
+				DECLARE INTEGER PyObject_CallObject IN (lcPath) INTEGER pObj, INTEGER args
+
+				* Get the type of an object
+				DECLARE INTEGER PyObject_Type IN (lcPath) INTEGER pObj
+
+				* Get, Set and delete item from mapping object
+				DECLARE INTEGER PyObject_GetItem IN (lcPath) INTEGER, INTEGER
+				DECLARE INTEGER PyObject_SetItem IN (lcPath) INTEGER, INTEGER, INTEGER
+				DECLARE INTEGER PyObject_DelItem IN (lcPath) INTEGER, INTEGER
+
+				* Get iterator from an object
+				DECLARE INTEGER PyObject_GetIter IN (lcPath) INTEGER
+
+				* Call a callable with positional and keyword arguments
+				DECLARE INTEGER PyObject_Call IN (lcPath) INTEGER FUNC, INTEGER args, INTEGER kwargs
+
+				* Convert object to string (repr/str)
+				DECLARE INTEGER PyObject_Str IN (lcPath) INTEGER pObj
+				DECLARE INTEGER PyObject_Repr IN (lcPath) INTEGER pObj
+
+				* Get and set attributes by name
+				DECLARE INTEGER PyObject_GetAttrString IN (lcPath) INTEGER, STRING
+				DECLARE INTEGER PyObject_SetAttrString IN (lcPath) INTEGER, STRING, INTEGER
+
+
+				* Reference counting (important for memory safety)
+				DECLARE Py_IncRef IN (lcPath) INTEGER pObj
+				DECLARE Py_DecRef IN (lcPath) INTEGER pObj
+
+				* Handlin tuple ( collection in VPF terms)
+				* A way to group multiple values together into a single object.
+				DECLARE INTEGER PyTuple_New IN (lcPath) INTEGER
+				DECLARE INTEGER PyTuple_SetItem IN (lcPath) INTEGER, INTEGER, INTEGER
+				DECLARE INTEGER PyTuple_Size  IN (lcPath) INTEGER pObj
+				DECLARE INTEGER PyTuple_GetItem IN (lcPath) INTEGER pObj, INTEGER pos
+
+				* Iterator handling
+				DECLARE INTEGER PyIter_Next IN (lcPath) INTEGER
+
+				* Check if Python is initialized
+				DECLARE INTEGER Py_IsInitialized IN (lcPath) INTEGER
+
+				* Dictionary handling
+				DECLARE INTEGER PyDict_New IN (lcPath)
+				DECLARE INTEGER PyDict_SetItem IN (lcPath) INTEGER pDict, INTEGER pKey, INTEGER pVal
+				DECLARE INTEGER PyDict_GetItem IN (lcPath) INTEGER, INTEGER
+				DECLARE INTEGER PyDict_Keys IN (lcPath) INTEGER
+				DECLARE INTEGER PyDict_Values IN (lcPath) INTEGER
+				DECLARE INTEGER PyDict_Items IN (lcPath) INTEGER
+
+				* List handling
+				DECLARE INTEGER PyList_Check IN (lcPath) INTEGER
+				DECLARE INTEGER PyList_Size IN (lcPath) INTEGER
+				DECLARE INTEGER PyList_New IN (lcPath) INTEGER
+
+				* Initialize Python once
+				Py_Initialize()
+				THIS.lInitialized = .T.
+				? "Python DLL loaded and initialized."
+				* Initialise public common Python objects
+				THIS.InitiatePublicObject()
+			ELSE
+				? "Failed to load Python DLL."
+			ENDIF
+		ELSE
+			? "DLL not found: " + lcPath
+		ENDIF
+	ENDPROC
+
+	FUNCTION InitiatePublicObject()
+		* Placeholder for any public module initialization of common Python objects
+		* e.g., builtins, sys, datetime, etc. that are frequently used.
+		* This avoids repeated loading in multiple places.
+
+		PUBLIC _PyBuiltins, _PyNone, _PyDatetime, _PySys, _PyStderr, _PyStdout, _PyLogger, _PyEmptyTuple, ;
+		_PyStrType, _PyBytesType, _PyBoolType, _PyIntType, _PyNotLongType, _PyFloatType, _PyDatetimeType, ;
+		_PyDateType, _PyDecimalType, _PyVfpHost
+
+		_PyVfpHost = THIS
+
+		_PyEmptyTuple = CREATEOBJECT('PythonTuple')
+		IF _PyMajorVersion == 2
+			_PyBuiltins = CREATEOBJECT('PythonModule', '__builtin__')
+		ELSE
+			_PyBuiltins = CREATEOBJECT('PythonModule', 'builtins')
+		ENDIF
+		_PyNone = _PyBuiltins.GetAttrRetObj('None')
+		_PyDatetime = CREATEOBJECT('PythonModule', 'datetime')
+		_PySys = CREATEOBJECT('PythonModule', 'sys')
+		IF _PyMajorVersion == 2
+			_PyStrType = _PyBuiltins.GetAttrRetObj('unicode')
+			_PyNotLongType = _PyBuiltins.GetAttrRetObj('int')
+			_PyIntType = _PyBuiltins.GetAttrRetObj('long')
+		ELSE
+			* Gives a FoxPro object that represents the Python str type.
+			_PyStrType = _PyBuiltins.GetAttrRetObj('str')
+			_PyIntType = _PyBuiltins.GetAttrRetObj('int')
+			_PyNotLongType = _PyBuiltins.GetAttrRetObj('int')
+		ENDIF
+		_PyBytesType = _PyBuiltins.GetAttrRetObj('bytes')
+		_PyBoolType = _PyBuiltins.GetAttrRetObj('bool')
+		_PyFloatType = _PyBuiltins.GetAttrRetObj('float')
+		_PyDatetimeType = _PyDatetime.GetAttrRetObj('datetime')
+		_PyDateType = _PyDatetime.GetAttrRetObj('date')
+
+		LOCAL loDecimalModule
+		loDecimalModule = CREATEOBJECT('PythonModule', 'decimal')
+		_PyDecimalType = loDecimalModule.GetAttrRetObj('Decimal')
+
+		* Setup sys.path to include current directory
+		_PySysPath = _PySys.getAttrRetObj('path')
+		_PySysPath.CallMethod('append', CREATEOBJECT('PythonTuple', CURDIR()), .NULL.)
+
+		* Ensures compatibility when embed Python inside Visual FoxPro
+		_PySys.setAttr('executable',THIS.cPythonExe)
+
+		* Set sys.argv to avoid issues with some libraries expecting it
+		_PySysArgv = CREATEOBJECT('PythonList')
+		_PySysArgv.callmethod('append', CREATEOBJECT('PythonTuple', ''), .NULL.)
+		_PySys.setAttr('argv', _PySysArgv)
+
+		* Redirect stdout and stderr
+		_PyStdout = CREATEOBJECT('PyStdoutRedirect', 'stdout')
+		_PyStderr = CREATEOBJECT('PyStdoutRedirect', 'stderr')
+
+		* Setup logger
+		_PyLogger = THIS.PythonFunctionCall('logging', 'getLogger', CREATEOBJECT('pythontuple', 'foxpro2python'))
+		RETURN .T.
+	ENDFUNC
+
+	FUNCTION RunPythonCode(tcCode)
+		IF THIS.lInitialized
+			RETURN PyRun_SimpleString(tcCode)
+		ENDIF
+		RETURN -1
+	ENDPROC
+
+	*------------------------------------------------------------------------
+	*  Function: Call a Python function in a module and return result
+	*    Params: tcModule          - Name of the Python module
+	*            tcFunction        - Name of the Python function to call
+	*            toReturnObj       - Object to store the return value
+	*            toDictionnaryObj  - Dictionary of keyword arguments
+	*    Assume: Preconditions or expectations (e.g., valid input ranges, environment setup)
+	*   Returns: Description of return value
+	*     Usage: Single line of calling context
+	*      Note: Optional additional notes or important information
+	*------------------------------------------------------------------------
+	FUNCTION PythonFunctionCall(tcModuleName, tcFunctionName, argtuple, kwarg_dict)
+		LOCAL loPyMod, loErr
+
+		IF NOT THIS.lInitialized
+			RETURN .NULL.
+		ENDIF
+
+		TRY
+			loPyMod = CREATEOBJECT('PythonModule', tcModuleName)
+		CATCH TO loErr
+
+		ENDTRY
+
+		IF VARTYPE(loErr) == 'O'
+			ERROR loErr.MESSAGE
+			RETURN
+		ENDIF
+
+		RETURN loPyMod.CallMethod(tcFunctionName, argtuple, kwarg_dict)
+	ENDPROC
+
+	FUNCTION PythonCallAsNative(modulename, funcname, argtuple, kwarg_dict)
+   		LOCAL retval
+   		retval = THIS.PythonFunctionCall(modulename, funcname, argtuple, kwarg_dict)
+   		RETURN _PyFoxNative(retval)
+	ENDFUNC
+
+	FUNCTION PythonCallAsCollection(modulename, funcname, argtuple, kwarg_dict)
+		LOCAL retval
+		retval = THIS.PythonFunctionCall(modulename, funcname, argtuple, kwarg_dict)
+		RETURN _PyFoxToCollection(retval)
+	ENDFUNC
+
+	FUNCTION UnloadPythonDLL()
+		* Release THIS reference to allow garbage collection
+		_PyVfpHost = .NULL.
+		THIS.GarbageCollect()
+		IF THIS.lnHandle != 0
+			DECLARE INTEGER FreeLibrary IN kernel32 INTEGER hLibModule
+			FreeLibrary(THIS.lnHandle)
+			THIS.lnHandle = 0
+			IF THIS.lVerbose
+				? "Python DLL unloaded."
+			ENDIF
+		ENDIF
+	ENDPROC
+
+	PROCEDURE GarbageCollect()
+
+		* Release references to common public Python objects
+		RELEASE _PyBuiltins, _PyNone, _PyDatetime, _PySys, _PyStderr, _PyStdout, _PyLogger, _PyEmptyTuple, ;
+		_PyStrType, _PyBytesType, _PyBoolType, _PyIntType, _PyNotLongType, _PyFloatType, _PyDatetimeType, ;
+		_PyDateType, _PyDecimalType, _PyVfpHost, _PyMajorVersion
+
+		DECLARE INTEGER Py_IsInitialized IN (THIS.cPythonDllPath)
+		DECLARE Py_DecRef IN (THIS.cPythonDllPath) INTEGER
+		DECLARE Py_Finalize IN (THIS.cPythonDllPath)
+
+		THIS.DestroyPythonInstances('PythonBuiltin')
+		THIS.DestroyPythonInstances('PythonTuple')
+		THIS.DestroyPythonInstances('PythonObject')
+		THIS.DestroyPythonInstances('PythonModule')
+		THIS.DestroyPythonInstances('PythonList')
+		THIS.DestroyPythonInstances('PythonDictionary')
+		THIS.DestroyPythonInstances('PythonObjectImpl')
+	
+		Py_Finalize()
+	
+		DECLARE INTEGER GetProcessHeap IN WIN32API
+		DECLARE INTEGER HeapFree IN WIN32API INTEGER, INTEGER, INTEGER
+		DECLARE INTEGER Py_GetPythonHome IN (THIS.cPythonDllPath)
+		DECLARE Py_SetPythonHome IN (THIS.cPythonDllPath) INTEGER
+
+		HeapFree(GetProcessHeap(), 0, Py_GetPythonHome())
+
+		Py_SetPythonHome(0)
+
+		CLEAR DLLS
+
+	ENDPROC
+
+	PROCEDURE DestroyPythonInstances(ClassType)
+		LOCAL Instance_Index
+		LOCAL ARRAY Instance_Array[1]
+		FOR Instance_Index = 1 TO AINSTANCE(Instance_Array, ClassType)
+			RELEASE (Instance_Array[Instance_Index])
+		ENDFOR
+	ENDPROC
+
+	PROCEDURE GetMajorVersion(dllfile)
+		LOCAL VERSION, RegEx, Oerr
+		LOCAL ARRAY DllInfo[1]
+
+		VERSION = 0
+		TRY
+			AGETFILEVERSION(DllInfo, dllfile)
+			LOCAL RegEx
+			RegEx = CREATEOBJECT('VBScript.RegExp')
+			RegEx.PATTERN = '^([0-9]*)\.([0-9]*)\.([0-9]*)'
+			IF RegEx.test(DllInfo(4))
+				VERSION = INT(VAL(RegEx.REPLACE(DllInfo[4], '$1')))
+			ENDIF
+		CATCH TO Oerr
+		ENDTRY
+
+		RETURN VERSION
+	ENDPROC
+
+ENDDEFINE
+

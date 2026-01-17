@@ -1,0 +1,6 @@
+lnLen = ADEL(ITEM)
+Error in line 80: Too few arguments.
+ELSEIF VARTYPE(ITEM[1]) == 'O'
+Error in line 85: Unrecognized command verb.
+ELSEIF VARTYPE(loParsed) == 'O' AND loParsed.COUNT > 1
+Error in line 114: Unrecognized command verb.

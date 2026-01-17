@@ -1,0 +1,27 @@
+* Captures the current Python exception (if
+* any) and returns a PythonTuple containing (type, value, traceback). This
+* can be used to pass the error info back into VFP or for logging.
+DEFINE CLASS PythonErrorHost AS PythonHost
+
+    * Check if a Python error is pending
+    FUNCTION HasError()
+        RETURN (PyErr_Occurred() != 0)
+    ENDPROC
+
+    * Return a PythonTuple containing (type, value, traceback)
+    FUNCTION GetErrorTuple()
+        IF THIS.HasError()
+            LOCAL lnPyType, lnPyValue, lnPyTraceback
+            lnPyType = 0
+            lnPyValue = 0
+            lnPyTraceback = 0
+
+            PyErr_Fetch(@lnPyType, @lnPyValue, @lnPyTraceback)
+            PyErr_NormalizeException(@lnPyType, @lnPyValue, @lnPyTraceback)
+
+            RETURN CREATEOBJECT("PythonTuple", lnPyType, lnPyValue, lnPyTraceback)
+        ENDIF
+        RETURN .NULL.
+    ENDPROC
+
+ENDDEFINE
